@@ -103,7 +103,17 @@ function start_instances() {
         echo "正在启动实例：$CONTAINER_NAME"
 
         docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-        [ ! -f "$LOG_FILE" ] && touch "$LOG_FILE" && chmod 644 "$LOG_FILE"
+        
+        # 新增：检查日志路径是否是目录，如果是则重建为文件
+        if [ -d "$LOG_FILE" ]; then
+            echo "⚠️ 检测到日志路径是目录，正在删除并重建为文件：$LOG_FILE"
+            rm -rf "$LOG_FILE"
+            touch "$LOG_FILE"
+            chmod 644 "$LOG_FILE"
+        elif [ ! -f "$LOG_FILE" ]; then
+            touch "$LOG_FILE"
+            chmod 644 "$LOG_FILE"
+        fi
 
         docker run -d \
             --name "$CONTAINER_NAME" \
