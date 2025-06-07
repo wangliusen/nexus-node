@@ -27,10 +27,10 @@ FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get install -y \\
-    curl \\
-    screen \\
-    bash \\
+RUN apt-get update && apt-get install -y \
+    curl \
+    screen \
+    bash \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl -sSL https://cli.nexus.xyz/ | bash
@@ -105,12 +105,12 @@ function start_instances() {
         docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
         [ ! -f "$LOG_FILE" ] && touch "$LOG_FILE" && chmod 644 "$LOG_FILE"
 
-        docker run -d \\
-            --name "$CONTAINER_NAME" \\
-            -e NODE_ID="$NODE_ID" \\
-            -e NEXUS_LOG="$LOG_FILE" \\
-            -e SCREEN_NAME="$SCREEN_NAME" \\
-            -v "$LOG_FILE":"$LOG_FILE" \\
+        docker run -d \
+            --name "$CONTAINER_NAME" \
+            -e NODE_ID="$NODE_ID" \
+            -e NEXUS_LOG="$LOG_FILE" \
+            -e SCREEN_NAME="$SCREEN_NAME" \
+            -v "$LOG_FILE":"$LOG_FILE" \
             "$IMAGE_NAME"
 
         echo "✅ 启动成功：$CONTAINER_NAME"
@@ -143,12 +143,12 @@ function restart_instance() {
 
     docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
 
-    docker run -d \\
-        --name "$CONTAINER_NAME" \\
-        -e NODE_ID="$NODE_ID" \\
-        -e NEXUS_LOG="$LOG_FILE" \\
-        -e SCREEN_NAME="$SCREEN_NAME" \\
-        -v "$LOG_FILE":"$LOG_FILE" \\
+    docker run -d \
+        --name "$CONTAINER_NAME" \
+        -e NODE_ID="$NODE_ID" \
+        -e NEXUS_LOG="$LOG_FILE" \
+        -e SCREEN_NAME="$SCREEN_NAME" \
+        -v "$LOG_FILE":"$LOG_FILE" \
         "$IMAGE_NAME"
 
     echo "✅ 已重启：$CONTAINER_NAME"
@@ -163,7 +163,7 @@ function show_running_ids() {
 }
 
 function change_node_id() {
-    read -rp "请输入要更换的实例编号（如 2 表示 nexus-node-2）: " idx
+    read -rp "请输入要更换的实例编号（例如 2 表示 nexus-node-2）：" idx
     CONTAINER_NAME="nexus-node-$idx"
     LOG_FILE="/root/nexus-$idx.log"
     SCREEN_NAME="nexus-$idx"
@@ -173,25 +173,25 @@ function change_node_id() {
         return
     fi
 
-    read -rp "请输入新的 node-id: " NEW_ID
+    read -rp "请输入新的 node-id：" NEW_ID
     if [ -z "$NEW_ID" ]; then
         echo "❌ node-id 不能为空。"
         return
     fi
 
-    echo "🔁 正在更换实例 $CONTAINER_NAME 的 node-id 为：$NEW_ID"
+    echo "🔁 正在更换 $CONTAINER_NAME 的 node-id 为：$NEW_ID"
 
     docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
 
-    docker run -d \\
-        --name "$CONTAINER_NAME" \\
-        -e NODE_ID="$NEW_ID" \\
-        -e NEXUS_LOG="$LOG_FILE" \\
-        -e SCREEN_NAME="$SCREEN_NAME" \\
-        -v "$LOG_FILE":"$LOG_FILE" \\
+    docker run -d \
+        --name "$CONTAINER_NAME" \
+        -e NODE_ID="$NEW_ID" \
+        -e NEXUS_LOG="$LOG_FILE" \
+        -e SCREEN_NAME="$SCREEN_NAME" \
+        -v "$LOG_FILE":"$LOG_FILE" \
         "$IMAGE_NAME"
 
-    echo "✅ 实例 $CONTAINER_NAME 已使用新 node-id 启动。"
+    echo "✅ 实例 $CONTAINER_NAME 已启动使用新 node-id。"
 }
 
 function add_one_instance() {
@@ -212,12 +212,12 @@ function add_one_instance() {
 
     echo "🚀 正在添加新实例 $CONTAINER_NAME"
 
-    docker run -d \\
-        --name "$CONTAINER_NAME" \\
-        -e NODE_ID="$NODE_ID" \\
-        -e NEXUS_LOG="$LOG_FILE" \\
-        -e SCREEN_NAME="$SCREEN_NAME" \\
-        -v "$LOG_FILE":"$LOG_FILE" \\
+    docker run -d \
+        --name "$CONTAINER_NAME" \
+        -e NODE_ID="$NODE_ID" \
+        -e NEXUS_LOG="$LOG_FILE" \
+        -e SCREEN_NAME="$SCREEN_NAME" \
+        -v "$LOG_FILE":"$LOG_FILE" \
         "$IMAGE_NAME"
 
     echo "✅ 新实例 $CONTAINER_NAME 已启动，日志：$LOG_FILE"
@@ -232,7 +232,7 @@ function view_logs() {
         return
     fi
 
-    echo "📄 正在实时查看日志文件：$LOG_FILE"
+    echo "📄 正在实时查看日志：$LOG_FILE"
     tail -f "$LOG_FILE"
 }
 
@@ -245,7 +245,7 @@ function show_menu() {
         echo "3. 重启指定实例"
         echo "4. 查看运行中的实例及 ID"
         echo "5. 退出"
-        echo "6. 更换某个实例的 node-id（并自动重启）"
+        echo "6. 更换指定实例的 node-id"
         echo "7. 添加一个新实例"
         echo "8. 查看指定实例日志"
         echo "======================================"
@@ -254,6 +254,14 @@ function show_menu() {
             1) check_docker; prepare_build_files; build_image; start_instances ;;
             2) stop_all_instances ;;
             3) restart_instance ;;
-            
-::contentReference[oaicite:29]{index=29}
- 
+            4) show_running_ids ;;
+            5) echo "已退出"; exit 0 ;;
+            6) change_node_id ;;
+            7) add_one_instance ;;
+            8) view_logs ;;
+            *) echo "无效选择";;
+        esac
+    done
+}
+
+show_menu
