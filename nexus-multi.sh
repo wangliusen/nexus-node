@@ -27,17 +27,20 @@ FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get install -y \
-    curl \
-    screen \
-    bash \
+RUN apt-get update && apt-get install -y \\
+    curl \\
+    screen \\
+    bash \\
+    cron \\
+    jq \\
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl -sSL https://cli.nexus.xyz/ | bash
 RUN ln -sf /root/.nexus/bin/nexus-network /usr/local/bin/nexus-network
 
 COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+COPY change-id.sh /change-id.sh
+RUN chmod +x /entrypoint.sh /change-id.sh
 
 ENTRYPOINT ["/entrypoint.sh"]
 EOF
@@ -48,10 +51,17 @@ set -e
 
 PROVER_ID_FILE="/root/.nexus/node-id"
 LOG_FILE="/root/nexus.log"
+ID_CONFIG_FILE="/root/.nexus/id_config.json"
 
 mkdir -p "$(dirname "$PROVER_ID_FILE")"
-echo "$NODE_ID" > "$PROVER_ID_FILE"
-echo "使用的 node-id: $NODE_ID"
+echo "$INITIAL_ID" > "$PROVER_ID_FILE"
+echo "初始 node-id: $INITIAL_ID"
+
+# 创建ID配置文件
+if [ -n "$ID_LIST" ]; then
+    mkdir -p "$(dirname "$ID_CONFIG_FILE")"
+    echo "$ID_LIST" | jq '.' > "$ID_CONFIG_FILE"
+fi
 
 [ -n "$NEXUS_LOG" ] && LOG_FILE="$NEXUS_LOG"
 [ -n "$SCREEN_NAME" ] || SCREEN_NAME="nexus"
@@ -61,10 +71,17 @@ if ! command -v nexus-network >/dev/null 2>&1; then
     exit 1
 fi
 
+# 设置定时任务自动更换ID
+if [ -n "$AUTO_CHANGE_ID" ]; then
+    echo "设置每2小时自动更换ID..."
+    (crontab -l 2>/dev/null; echo "0 */2 * * * /change-id.sh \"$SCREEN_NAME\" \"$LOG_FILE\"") | crontab -
+    service cron start
+fi
+
 screen -S "$SCREEN_NAME" -X quit >/dev/null 2>&1 || true
 
 echo "启动 nexus-network..."
-screen -dmS "$SCREEN_NAME" bash -c "nexus-network start --node-id $NODE_ID &>> $LOG_FILE"
+screen -dmS "$SCREEN_NAME" bash -c "nexus-network start --node-id $INITIAL_ID &>> $LOG_FILE"
 
 sleep 3
 
@@ -77,6 +94,48 @@ else
 fi
 
 tail -f "$LOG_FILE"
+EOF
+
+    cat > change-id.sh <<'EOF'
+#!/bin/bash
+set -e
+
+SCREEN_NAME="$1"
+LOG_FILE="$2"
+ID_CONFIG_FILE="/root/.nexus/id_config.json"
+CURRENT_INDEX_FILE="/root/.nexus/current_id_index"
+
+if [ ! -f "$ID_CONFIG_FILE" ]; then
+    echo "$(date) - 错误：找不到ID配置文件" >> "$LOG_FILE"
+    exit 1
+fi
+
+# 读取当前索引
+CURRENT_INDEX=0
+if [ -f "$CURRENT_INDEX_FILE" ]; then
+    CURRENT_INDEX=$(cat "$CURRENT_INDEX_FILE")
+fi
+
+# 计算下一个索引
+ID_COUNT=$(jq '.ids | length' "$ID_CONFIG_FILE")
+NEXT_INDEX=$(( (CURRENT_INDEX + 1) % ID_COUNT ))
+
+# 获取下一个ID
+NEW_ID=$(jq -r ".ids[$NEXT_INDEX]" "$ID_CONFIG_FILE")
+
+# 更新索引
+echo "$NEXT_INDEX" > "$CURRENT_INDEX_FILE"
+
+echo "$(date) - 自动更换ID为: $NEW_ID" >> "$LOG_FILE"
+
+# 停止当前实例
+screen -S "$SCREEN_NAME" -X quit >/dev/null 2>&1 || true
+
+# 启动新实例
+screen -dmS "$SCREEN_NAME" bash -c "nexus-network start --node-id $NEW_ID &>> $LOG_FILE"
+
+# 更新node-id文件
+echo "$NEW_ID" > /root/.nexus/node-id
 EOF
 }
 
@@ -93,18 +152,36 @@ function start_instances() {
         exit 1
     fi
 
-    for i in $(seq 1 "$INSTANCE_COUNT"); do
-        read -rp "请输入第 $i 个实例的 node-id: " NODE_ID
+    read -rp "是否启用每2小时自动更换ID? (y/n): " ENABLE_AUTO_CHANGE
+    AUTO_CHANGE_FLAG=""
+    if [[ "$ENABLE_AUTO_CHANGE" =~ ^[Yy]$ ]]; then
+        AUTO_CHANGE_FLAG="yes"
+    fi
 
+    for i in $(seq 1 "$INSTANCE_COUNT"); do
         CONTAINER_NAME="nexus-node-$i"
         LOG_FILE="/root/nexus-$i.log"
         SCREEN_NAME="nexus-$i"
 
+        echo -e "\n准备实例 $i 的配置: $CONTAINER_NAME"
+        
+        # 为每个实例输入4个专属ID
+        ID_ARRAY=()
+        for j in {1..4}; do
+            read -rp "请输入第 $j 个ID: " ID
+            ID_ARRAY+=("\"$ID\"")
+        done
+        
+        # 创建JSON格式的ID列表
+        ID_LIST_JSON="{\"ids\":[$(IFS=,; echo "${ID_ARRAY[*]}")]}"
+        INITIAL_ID=$(echo "$ID_LIST_JSON" | jq -r '.ids[0]')
+
         echo "正在启动实例：$CONTAINER_NAME"
+        echo "初始ID: $INITIAL_ID"
+        echo "ID列表: $(echo "$ID_LIST_JSON" | jq -c .)"
 
         docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
         
-        # 新增：检查日志路径是否是目录，如果是则重建为文件
         if [ -d "$LOG_FILE" ]; then
             echo "⚠️ 检测到日志路径是目录，正在删除并重建为文件：$LOG_FILE"
             rm -rf "$LOG_FILE"
@@ -117,9 +194,11 @@ function start_instances() {
 
         docker run -d \
             --name "$CONTAINER_NAME" \
-            -e NODE_ID="$NODE_ID" \
+            -e INITIAL_ID="$INITIAL_ID" \
+            -e ID_LIST="$ID_LIST_JSON" \
             -e NEXUS_LOG="$LOG_FILE" \
             -e SCREEN_NAME="$SCREEN_NAME" \
+            -e AUTO_CHANGE_ID="$AUTO_CHANGE_FLAG" \
             -v "$LOG_FILE":"$LOG_FILE" \
             "$IMAGE_NAME"
 
@@ -144,10 +223,12 @@ function restart_instance() {
 
     echo "正在重启实例 $CONTAINER_NAME..."
 
-    NODE_ID=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$CONTAINER_NAME" 2>/dev/null | grep NODE_ID= | cut -d= -f2)
+    INITIAL_ID=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$CONTAINER_NAME" 2>/dev/null | grep INITIAL_ID= | cut -d= -f2)
+    ID_LIST_JSON=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$CONTAINER_NAME" 2>/dev/null | grep ID_LIST= | cut -d= -f2)
+    AUTO_CHANGE_FLAG=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$CONTAINER_NAME" 2>/dev/null | grep AUTO_CHANGE_ID= | cut -d= -f2)
 
-    if [ -z "$NODE_ID" ]; then
-        echo "❌ 找不到实例或 node-id，可能未运行或未创建。"
+    if [ -z "$INITIAL_ID" ]; then
+        echo "❌ 找不到实例或配置信息，可能未运行或未创建。"
         return
     fi
 
@@ -155,9 +236,11 @@ function restart_instance() {
 
     docker run -d \
         --name "$CONTAINER_NAME" \
-        -e NODE_ID="$NODE_ID" \
+        -e INITIAL_ID="$INITIAL_ID" \
+        -e ID_LIST="$ID_LIST_JSON" \
         -e NEXUS_LOG="$LOG_FILE" \
         -e SCREEN_NAME="$SCREEN_NAME" \
+        -e AUTO_CHANGE_ID="$AUTO_CHANGE_FLAG" \
         -v "$LOG_FILE":"$LOG_FILE" \
         "$IMAGE_NAME"
 
@@ -165,10 +248,17 @@ function restart_instance() {
 }
 
 function show_running_ids() {
-    echo "🔍 正在查询所有运行中的 Nexus 实例及 node-id..."
+    echo "🔍 正在查询所有运行中的 Nexus 实例及 ID 信息..."
     docker ps --format '{{.Names}}' | grep '^nexus-node-' | while read -r name; do
-        ID=$(docker exec "$name" cat /root/.nexus/node-id 2>/dev/null)
-        echo "实例：$name     node-id: $ID"
+        CURRENT_ID=$(docker exec "$name" cat /root/.nexus/node-id 2>/dev/null || echo "未知")
+        CURRENT_INDEX=$(docker exec "$name" cat /root/.nexus/current_id_index 2>/dev/null || echo "0")
+        ID_COUNT=$(docker exec "$name" jq '.ids | length' /root/.nexus/id_config.json 2>/dev/null || echo "0")
+        
+        echo "实例: $name"
+        echo "  当前ID: $CURRENT_ID"
+        echo "  当前索引: $CURRENT_INDEX/$((ID_COUNT-1))"
+        echo "  ID列表: $(docker exec "$name" jq -c '.ids' /root/.nexus/id_config.json 2>/dev/null || echo "未知")"
+        echo "----------------------------------------"
     done
 }
 
@@ -183,25 +273,27 @@ function change_node_id() {
         return
     fi
 
-    read -rp "请输入新的 node-id：" NEW_ID
-    if [ -z "$NEW_ID" ]; then
-        echo "❌ node-id 不能为空。"
+    # 显示当前ID列表
+    echo "当前ID列表:"
+    docker exec "$CONTAINER_NAME" jq '.ids' /root/.nexus/id_config.json
+
+    read -rp "请输入要切换到的ID索引 (0-3): " NEW_INDEX
+    if ! [[ "$NEW_INDEX" =~ ^[0-3]$ ]]; then
+        echo "❌ 无效索引，请输入0-3之间的数字"
         return
     fi
 
-    echo "🔁 正在更换 $CONTAINER_NAME 的 node-id 为：$NEW_ID"
+    NEW_ID=$(docker exec "$CONTAINER_NAME" jq -r ".ids[$NEW_INDEX]" /root/.nexus/id_config.json)
 
-    docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+    echo "🔁 正在更换 $CONTAINER_NAME 的 node-id 为索引[$NEW_INDEX]: $NEW_ID"
 
-    docker run -d \
-        --name "$CONTAINER_NAME" \
-        -e NODE_ID="$NEW_ID" \
-        -e NEXUS_LOG="$LOG_FILE" \
-        -e SCREEN_NAME="$SCREEN_NAME" \
-        -v "$LOG_FILE":"$LOG_FILE" \
-        "$IMAGE_NAME"
+    # 更新索引文件
+    docker exec "$CONTAINER_NAME" bash -c "echo $NEW_INDEX > /root/.nexus/current_id_index"
 
-    echo "✅ 实例 $CONTAINER_NAME 已启动使用新 node-id。"
+    # 重启容器使更改生效
+    docker restart "$CONTAINER_NAME" >/dev/null
+
+    echo "✅ 实例 $CONTAINER_NAME 已切换至新ID"
 }
 
 function add_one_instance() {
@@ -210,23 +302,40 @@ function add_one_instance() {
         ((NEXT_NUM++))
     done
 
-    read -rp "请输入新实例的 node-id: " NODE_ID
-    if [ -z "$NODE_ID" ]; then
-        echo "❌ node-id 不能为空。"
-        return
-    fi
-
     CONTAINER_NAME="nexus-node-$NEXT_NUM"
     LOG_FILE="/root/nexus-$NEXT_NUM.log"
     SCREEN_NAME="nexus-$NEXT_NUM"
 
-    echo "🚀 正在添加新实例 $CONTAINER_NAME"
+    echo -e "\n准备新实例 $NEXT_NUM 的配置: $CONTAINER_NAME"
+    
+    # 为实例输入4个专属ID
+    ID_ARRAY=()
+    for j in {1..4}; do
+        read -rp "请输入第 $j 个ID: " ID
+        ID_ARRAY+=("\"$ID\"")
+    done
+    
+    # 创建JSON格式的ID列表
+    ID_LIST_JSON="{\"ids\":[$(IFS=,; echo "${ID_ARRAY[*]}")]}"
+    INITIAL_ID=$(echo "$ID_LIST_JSON" | jq -r '.ids[0]')
+
+    read -rp "是否启用每2小时自动更换ID? (y/n): " ENABLE_AUTO_CHANGE
+    AUTO_CHANGE_FLAG=""
+    if [[ "$ENABLE_AUTO_CHANGE" =~ ^[Yy]$ ]]; then
+        AUTO_CHANGE_FLAG="yes"
+    fi
+
+    echo "正在启动实例：$CONTAINER_NAME"
+    echo "初始ID: $INITIAL_ID"
+    echo "ID列表: $(echo "$ID_LIST_JSON" | jq -c .)"
 
     docker run -d \
         --name "$CONTAINER_NAME" \
-        -e NODE_ID="$NODE_ID" \
+        -e INITIAL_ID="$INITIAL_ID" \
+        -e ID_LIST="$ID_LIST_JSON" \
         -e NEXUS_LOG="$LOG_FILE" \
         -e SCREEN_NAME="$SCREEN_NAME" \
+        -e AUTO_CHANGE_ID="$AUTO_CHANGE_FLAG" \
         -v "$LOG_FILE":"$LOG_FILE" \
         "$IMAGE_NAME"
 
@@ -253,8 +362,8 @@ function show_menu() {
         echo "1. 构建并启动新实例"
         echo "2. 停止所有实例"
         echo "3. 重启指定实例"
-        echo "4. 查看运行中的实例及 ID"
-        echo "5. 更换某个实例的 node-id"
+        echo "4. 查看运行中的实例及ID信息"
+        echo "5. 手动切换实例的ID"
         echo "6. 添加一个新实例"
         echo "7. 查看指定实例日志"
         echo "8. 退出"
