@@ -244,10 +244,10 @@ function show_menu() {
         echo "2. 停止所有实例"
         echo "3. 重启指定实例"
         echo "4. 查看运行中的实例及 ID"
-        echo "5. 退出"
-        echo "6. 更换指定实例的 node-id"
-        echo "7. 添加一个新实例"
-        echo "8. 查看指定实例日志"
+        echo "5. 更换某个实例的 node-id"
+        echo "6. 添加一个新实例"
+        echo "7. 查看指定实例日志"
+        echo "8. 退出"
         echo "======================================"
         read -rp "请选择操作 (1-8): " choice
         case "$choice" in
@@ -255,13 +255,14 @@ function show_menu() {
             2) stop_all_instances ;;
             3) restart_instance ;;
             4) show_running_ids ;;
-            5) echo "已退出"; exit 0 ;;
-            6) change_node_id ;;
-            7) add_one_instance ;;
-            8) view_logs ;;
+            5) change_node_id ;;
+            6) add_one_instance ;;
+            7) view_logs ;;
+            8) echo "已退出"; exit 0 ;;
             *) echo "无效选择";;
         esac
     done
 }
 
 show_menu
+
