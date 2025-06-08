@@ -294,3 +294,4 @@ function show_menu() {
 
 # 启动菜单
 show_menu
+
