@@ -66,7 +66,9 @@ mkdir -p /nexus-data
 touch "$LOG_FILE"
 echo "▶️ 正在启动节点：$NODE_ID，日志写入 $LOG_FILE"
 
-exec nexus-network start --node-id "$NODE_ID" >> "$LOG_FILE" 2>&1
+# 使用 stdbuf 实时刷新日志 + tee 保存
+exec stdbuf -oL nexus-network start --node-id "$NODE_ID" 2>&1 | tee -a "$LOG_FILE"
+
 EOF
 
     chmod +x entrypoint.sh
@@ -155,33 +157,38 @@ function view_logs() {
     echo "当前运行中的实例及其节点 ID："
     echo
 
-    declare -A ID_MAP
+    containers=()
+    node_ids=()
     index=1
 
-    while IFS= read -r container; do
+    for container in $(docker ps --filter "name=nexus-node-" --format '{{.Names}}'); do
         NODE_ID=$(docker inspect "$container" --format '{{range .Config.Env}}{{println .}}{{end}}' | grep NODE_ID | cut -d= -f2)
         echo "[$index] 容器: $container | 节点 ID: $NODE_ID"
-        ID_MAP[$index]=$NODE_ID
-        ((index++))
-    done < <(docker ps --filter "name=nexus-node-" --format '{{.Names}}')
+        containers+=("$container")
+        node_ids+=("$NODE_ID")
+        index=$((index+1))
+    done
 
     echo
     read -rp "请选择要查看日志的编号（如 1）: " choice
-    NODE_ID=${ID_MAP[$choice]}
 
-    if [ -z "$NODE_ID" ]; then
+    if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#node_ids[@]}" ]; then
         echo "❌ 无效编号"
         return 1
     fi
 
+    NODE_ID="${node_ids[$((choice-1))]}"
     LOG_FILE="$LOG_DIR/nexus-${NODE_ID}.log"
+
     if [ -f "$LOG_FILE" ]; then
         echo "📄 正在查看日志：$LOG_FILE"
-        tail -f "$LOG_FILE"
+        less -r +F "$LOG_FILE"
+
     else
         echo "❌ 日志文件不存在: $LOG_FILE"
     fi
 }
+
 
 function setup_rotation_schedule() {
     mkdir -p "$CONFIG_DIR"
