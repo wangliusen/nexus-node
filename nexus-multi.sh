@@ -67,7 +67,8 @@ touch "$LOG_FILE"
 echo "▶️ 正在启动节点：$NODE_ID，日志写入 $LOG_FILE"
 
 # 使用 stdbuf 实时刷新日志 + tee 保存
-exec stdbuf -oL nexus-network start --node-id "$NODE_ID" 2>&1 | tee -a "$LOG_FILE"
+stdbuf -oL nexus-network start --node-id "$NODE_ID" --no-color > >(tee -a "$LOG_FILE") 2>&1
+
 
 EOF
 
@@ -115,8 +116,11 @@ function start_instances() {
 }
 
 function add_one_instance() {
-    NEXT_IDX=$(docker ps -a --filter "name=nexus-node-" --format '{{.Names}}' | sed 's/nexus-node-//' | sort -n | tail -1 | awk '{print $1+1}')
-    [ -z "$NEXT_IDX" ] && NEXT_IDX=1
+    NEXT_IDX=1
+    while docker ps -a --format '{{.Names}}' | grep -q "nexus-node-$NEXT_IDX"; do
+        ((NEXT_IDX++))
+    done
+
 
     while true; do
         read -rp "请输入新实例的 node-id: " NODE_ID
@@ -153,52 +157,24 @@ function change_node_id() {
     echo "✅ 修改完成，节点 ID 已更新为 $NEW_ID"
 }
 
-function view_logs() {
-    echo "当前运行中的实例及其节点 ID："
-    echo
-
-    containers=()
-    node_ids=()
-    index=1
-
-    for container in $(docker ps --filter "name=nexus-node-" --format '{{.Names}}'); do
-        NODE_ID=$(docker inspect "$container" --format '{{range .Config.Env}}{{println .}}{{end}}' | grep NODE_ID | cut -d= -f2)
-        echo "[$index] 容器: $container | 节点 ID: $NODE_ID"
-        containers+=("$container")
-        node_ids+=("$NODE_ID")
-        index=$((index+1))
-    done
-
-    echo
-    read -rp "请选择要查看日志的编号（如 1）: " choice
-
-    if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#node_ids[@]}" ]; then
-        echo "❌ 无效编号"
-        return 1
-    fi
-
-    NODE_ID="${node_ids[$((choice-1))]}"
-    LOG_FILE="$LOG_DIR/nexus-${NODE_ID}.log"
-
-    if [ -f "$LOG_FILE" ]; then
-        echo "📄 正在查看日志：$LOG_FILE"
-        less -r +F "$LOG_FILE"
-
-    else
-        echo "❌ 日志文件不存在: $LOG_FILE"
-    fi
-}
-
-
 function setup_rotation_schedule() {
     mkdir -p "$CONFIG_DIR"
+
+    # 写入默认 ID 配置（可选）
+if [ ! -f "$CONFIG_DIR/id-config.json" ]; then
     cat > "$CONFIG_DIR/id-config.json" <<EOF
 {
   "nexus-node-1": ["1001", "1002", "1003"],
   "nexus-node-2": ["2001", "2002", "2003"]
 }
 EOF
+    echo "✅ 已生成默认 id-config.json，请根据你自己的节点 ID 修改"
+else
+    echo "⚠️ 已存在 id-config.json，未覆盖"
+fi
 
+
+    # 写入轮换脚本
     cat > "$CONFIG_DIR/rotate.sh" <<'EOF'
 #!/bin/bash
 CONFIG="/root/nexus-node/config/id-config.json"
@@ -206,7 +182,12 @@ LOG_DIR="/root/nexus-node/logs"
 
 for CONTAINER in $(jq -r 'keys[]' "$CONFIG"); do
     IDS=($(jq -r ".\"$CONTAINER\"[]" "$CONFIG"))
-    CURRENT_ID=$(docker inspect "$CONTAINER" --format '{{.Config.Env}}' | grep -oP 'NODE_ID=\K\d+')
+    CURRENT_ID=$(docker inspect "$CONTAINER" --format '{{json .Config.Env}}' | jq -r '.[]' | grep "^NODE_ID=" | cut -d= -f2)
+
+    if [ -z "$CURRENT_ID" ]; then
+        echo "$(date) ❌ 无法获取 $CONTAINER 的当前 NODE_ID，跳过"
+        continue
+    fi
 
     for i in "${!IDS[@]}"; do
         if [ "${IDS[i]}" == "$CURRENT_ID" ]; then
@@ -223,13 +204,20 @@ for CONTAINER in $(jq -r 'keys[]' "$CONFIG"); do
         -v "$LOG_DIR":/nexus-data \
         nexus-node:latest
 done
+
 EOF
 
     chmod +x "$CONFIG_DIR/rotate.sh"
-    (crontab -l 2>/dev/null; echo "0 */2 * * * $CONFIG_DIR/rotate.sh >> $LOG_DIR/rotation.log 2>&1") | crontab -
 
-    echo "✅ 已部署每 2 小时自动轮换计划"
+    # 如果轮换任务已经存在，就不再重复添加
+    if ! crontab -l 2>/dev/null | grep -q "rotate.sh"; then
+        (crontab -l 2>/dev/null; echo "0 */2 * * * $CONFIG_DIR/rotate.sh >> $LOG_DIR/rotation.log 2>&1") | crontab -
+        echo "✅ 已部署每 2 小时自动轮换计划"
+    else
+        echo "⚠️ 轮换任务已存在，无需重复添加"
+    fi
 }
+
 
 function show_menu() {
     clear
@@ -247,6 +235,37 @@ function show_menu() {
             echo "📦 实例: $CONTAINER | 状态: $STATUS | 节点ID: $NODE_ID"
         done
     fi
+function enter_container_ui() {
+    echo "当前运行中的实例："
+    echo "--------------------------------"
+
+    containers=($(docker ps --filter "name=nexus-node-" --format "{{.Names}}"))
+    if [ ${#containers[@]} -eq 0 ]; then
+        echo "⚠️ 没有运行中的实例"
+        return 1
+    fi
+
+    for i in "${!containers[@]}"; do
+        node_id=$(docker inspect "${containers[i]}" --format '{{json .Config.Env}}' | jq -r '.[]' | grep "^NODE_ID=" | cut -d= -f2)
+        echo "[$((i+1))] 容器: ${containers[i]} | 节点ID: $node_id"
+    done
+
+    echo
+    read -rp "请输入要进入的实例编号: " input
+
+    if [[ "$input" =~ ^[0-9]+$ && "$input" -le "${#containers[@]}" ]]; then
+        index=$((input-1))
+        container_name="${containers[index]}"
+        node_id=$(docker inspect "$container_name" --format '{{json .Config.Env}}' | jq -r '.[]' | grep "^NODE_ID=" | cut -d= -f2)
+
+        echo "✅ 正在进入容器并启动 nexus-network UI..."
+        sleep 1
+        docker exec -it "$container_name" bash -c "nexus-network start --node-id $node_id"
+    else
+        echo "❌ 输入无效，已取消操作"
+    fi
+}
+
 
     echo
     echo "1. 构建镜像"
@@ -254,8 +273,8 @@ function show_menu() {
     echo "3. 停止所有实例"
     echo "4. 更换某实例 node-id"
     echo "5. 添加一个新实例"
-    echo "6. 查看节点日志"
-    echo "7. 部署自动轮换计划"
+    echo "6. 部署自动轮换计划"
+    echo "7. 一键进入容器查看日志"
     echo "0. 退出"
 }
 
@@ -272,8 +291,8 @@ while true; do
         3) docker rm -f $(docker ps -aq --filter "name=nexus-node-") || true;;
         4) change_node_id;;
         5) add_one_instance;;
-        6) view_logs;;
-        7) setup_rotation_schedule;;
+        6) setup_rotation_schedule;;
+        7) enter_container_ui;;
         0) echo "退出"; exit 0;;
         *) echo "无效选项";;
     esac
