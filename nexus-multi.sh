@@ -42,13 +42,12 @@ RUN mkdir -p /root/.cargo && \
     curl https://sh.rustup.rs -sSf | sh -s -- -y
 
 WORKDIR /tmp
-RUN git clone https://github.com/nexus-xyz/nexus-cli.git --depth 1 && \
-    cd nexus-cli && \
-    git checkout $(git describe --tags $(git rev-list --tags --max-count=1)) && \
-    cd clients/cli && \
-    bash -c "source /root/.cargo/env && cargo build --release" && \
-    cp target/release/nexus-network /usr/local/bin/ && \
-    chmod +x /usr/local/bin/nexus-network
+RUN git clone https://github.com/nexus-xyz/nexus-cli.git
+WORKDIR /tmp/nexus-cli
+RUN git checkout v0.8.3
+WORKDIR /tmp/nexus-cli/clients/cli
+RUN . /root/.cargo/env && cargo build --release
+RUN cp target/release/nexus-network /usr/local/bin/ && chmod +x /usr/local/bin/nexus-network
 
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
@@ -65,10 +64,7 @@ LOG_FILE="/nexus-data/nexus-${NODE_ID}.log"
 mkdir -p /nexus-data
 touch "$LOG_FILE"
 echo "▶️ 正在启动节点：$NODE_ID，日志写入 $LOG_FILE"
-
-# 使用 stdbuf 实时刷新日志 + tee 保存
-stdbuf -oL nexus-network start --node-id "$NODE_ID" --no-color > >(tee -a "$LOG_FILE") 2>&1
-
+stdbuf -oL nexus-network start --node-id "$NODE_ID" --log-format=plain > >(tee -a "$LOG_FILE") 2>&1
 
 EOF
 
