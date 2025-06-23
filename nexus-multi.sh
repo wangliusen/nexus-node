@@ -21,32 +21,42 @@ function check_docker() {
         add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"
         apt update && apt install -y docker-ce
         systemctl enable docker && systemctl start docker
-    }
+       }
 }
-function prepare_build_files() {
-    init_dirs
-    cd "$BUILD_DIR"
+prepare_build_files() {
+    mkdir -p "$BUILD_DIR"
 
-    cat > Dockerfile <<'EOF'
+    cat > "$BUILD_DIR/Dockerfile" <<EOF
 FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-    curl git build-essential pkg-config libssl-dev \
-    clang libclang-dev cmake jq ca-certificates && \
+ARG http_proxy
+ARG https_proxy
+
+RUN sed -i 's/archive.ubuntu.com/mirrors.aliyun.com/g' /etc/apt/sources.list && \\
+    sed -i 's/security.ubuntu.com/mirrors.aliyun.com/g' /etc/apt/sources.list && \\
+    apt-get update && \\
+    apt-get install -y --no-install-recommends \\
+    curl git build-essential pkg-config libssl-dev \\
+    clang libclang-dev cmake jq ca-certificates && \\
     rm -rf /var/lib/apt/lists/*
 
-RUN mkdir -p /root/.cargo && \
-    echo '[source.crates-io]\nreplace-with = "ustc"\n[source.ustc]\nregistry = "https://mirrors.ustc.edu.cn/crates.io-index"' > /root/.cargo/config && \
+RUN mkdir -p /root/.cargo && \\
+    echo '[source.crates-io]' > /root/.cargo/config.toml && \\
+    echo 'replace-with = "ustc"' >> /root/.cargo/config.toml && \\
+    echo '[source.ustc]' >> /root/.cargo/config.toml && \\
+    echo 'registry = "https://mirrors.ustc.edu.cn/crates.io-index"' >> /root/.cargo/config.toml && \\
+    echo '[net]' >> /root/.cargo/config.toml && \\
+    echo 'git-fetch-with-cli = true' >> /root/.cargo/config.toml && \\
     curl https://sh.rustup.rs -sSf | sh -s -- -y
 
 WORKDIR /tmp
 RUN git clone https://github.com/nexus-xyz/nexus-cli.git
 WORKDIR /tmp/nexus-cli
 RUN git checkout v0.8.10
+
 WORKDIR /tmp/nexus-cli/clients/cli
-RUN . /root/.cargo/env && cargo build --release
+RUN . /root/.cargo/env && RUST_BACKTRACE=full cargo build --release
 RUN cp target/release/nexus-network /usr/local/bin/ && chmod +x /usr/local/bin/nexus-network
 
 COPY entrypoint.sh /entrypoint.sh
@@ -54,22 +64,26 @@ RUN chmod +x /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]
 EOF
 
-    cat > entrypoint.sh <<'EOF'
+    cat > "$BUILD_DIR/entrypoint.sh" <<'EOF'
 #!/bin/bash
 set -e
 
-[ -z "$NODE_ID" ] && { echo "❌ 必须设置 NODE_ID 环境变量" >&2; exit 1; }
+[ -z "$NODE_ID" ] && {
+    echo "❌ 必须设置 NODE_ID 环境变量" >&2
+    exit 1
+}
 
 LOG_FILE="/nexus-data/nexus-${NODE_ID}.log"
 mkdir -p /nexus-data
 touch "$LOG_FILE"
 echo "▶️ 正在启动节点：$NODE_ID，日志写入 $LOG_FILE"
-stdbuf -oL nexus-network start --node-id "$NODE_ID" --log-format=plain > >(tee -a "$LOG_FILE") 2>&1
 
+stdbuf -oL nexus-network start --node-id "$NODE_ID" > >(tee -a "$LOG_FILE") 2>&1
 EOF
 
-    chmod +x entrypoint.sh
+    chmod +x "$BUILD_DIR/entrypoint.sh"
 }
+
 
 function build_image() {
     cd "$BUILD_DIR"
@@ -217,7 +231,7 @@ EOF
 
 function show_menu() {
     clear
-    echo -e "\\n=========== Nexus 节点管理 ==========="
+    echo -e "\n=========== Nexus 节点管理 ==========="
     echo "📁 日志目录: $LOG_DIR"
     echo
 
@@ -231,6 +245,19 @@ function show_menu() {
             echo "📦 实例: $CONTAINER | 状态: $STATUS | 节点ID: $NODE_ID"
         done
     fi
+
+    echo
+    echo "1. 构建镜像"
+    echo "2. 启动多个实例"
+    echo "3. 停止所有实例"
+    echo "4. 更换某实例 node-id"
+    echo "5. 添加一个新实例"
+    echo "6. 部署自动轮换计划"
+    echo "7. 一键进入容器查看日志"
+    echo "0. 退出"
+}
+
+# 进入容器UI
 function enter_container_ui() {
     echo "当前运行中的实例："
     echo "--------------------------------"
@@ -252,8 +279,6 @@ function enter_container_ui() {
     if [[ "$input" =~ ^[0-9]+$ && "$input" -le "${#containers[@]}" ]]; then
         index=$((input-1))
         container_name="${containers[index]}"
-        node_id=$(docker inspect "$container_name" --format '{{json .Config.Env}}' | jq -r '.[]' | grep "^NODE_ID=" | cut -d= -f2)
-
         echo "✅ 正在进入容器并启动 nexus-network UI..."
         sleep 1
         docker exec -it "$container_name" bash -c "nexus-network start --node-id $node_id"
@@ -262,19 +287,7 @@ function enter_container_ui() {
     fi
 }
 
-
-    echo
-    echo "1. 构建镜像"
-    echo "2. 启动多个实例"
-    echo "3. 停止所有实例"
-    echo "4. 更换某实例 node-id"
-    echo "5. 添加一个新实例"
-    echo "6. 部署自动轮换计划"
-    echo "7. 一键进入容器查看日志"
-    echo "0. 退出"
-}
-
-# 主程序入口
+# ========== 主程序 ==========
 check_docker
 init_dirs
 
