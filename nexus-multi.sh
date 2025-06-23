@@ -44,7 +44,7 @@ RUN mkdir -p /root/.cargo && \
 WORKDIR /tmp
 RUN git clone https://github.com/nexus-xyz/nexus-cli.git
 WORKDIR /tmp/nexus-cli
-RUN git checkout v0.8.3
+RUN git checkout v0.8.10
 WORKDIR /tmp/nexus-cli/clients/cli
 RUN . /root/.cargo/env && cargo build --release
 RUN cp target/release/nexus-network /usr/local/bin/ && chmod +x /usr/local/bin/nexus-network
