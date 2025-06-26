@@ -277,12 +277,13 @@ while true; do
     show_menu
     read -rp "请选择操作: " choice
     case "$choice" in
-        1) build_image ;;
-        2) start_instances ;;
-        3) stop_instances ;;
+        1) prepare_build_files; build_image;;
+        2) start_instances;;
+        3) docker rm -f $(docker ps -aq --filter "name=nexus-node-") || true;;
         4) show_container_logs ;;
-        5) show_resource_monitor ;;
-        0) echo "👋 再见"; exit 0 ;;
-        *) echo "❌ 无效选择"; sleep 1 ;;
+        5) restart_node;;
+        6) add_one_instance ;;
+        0) echo "退出"; exit 0;;
+        *) echo "无效选项";;
     esac
 done
