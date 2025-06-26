@@ -62,7 +62,7 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 WORKDIR /tmp
 RUN git clone https://github.com/nexus-xyz/nexus-cli.git
 WORKDIR /tmp/nexus-cli
-RUN git checkout v0.8.12
+RUN git checkout v0.8.13
 
 WORKDIR /tmp/nexus-cli/clients/cli
 RUN RUST_BACKTRACE=full cargo build --release
@@ -206,50 +206,34 @@ function restart_node() {
 }
 
 function show_container_logs() {
-    while true; do
-        clear
-        echo "Nexus 节点日志查看"
-        echo "--------------------------------"
+    containers=($(docker ps --filter "name=nexus-node-" --format "{{.Names}}"))
+    if [ ${#containers[@]} -eq 0 ]; then
+        echo "⚠️ 当前没有正在运行的实例"
+        read -rp "按 Enter 返回菜单..."
+        return
+    fi
 
-        containers=($(docker ps --filter "name=nexus-node-" --format "{{.Names}}"))
-        if [ ${#containers[@]} -eq 0 ]; then
-            echo "⚠️ 没有运行中的实例"
-            sleep 2
-            return
-        fi
-
-        for i in "${!containers[@]}"; do
-            status=$(docker inspect -f '{{.State.Status}}' "${containers[i]}")
-            node_id=$(docker inspect "${containers[i]}" --format '{{range .Config.Env}}{{println .}}{{end}}' | grep "^NODE_ID=" | cut -d= -f2)
-            echo "[$((i+1))] ${containers[i]} (状态: $status | 节点ID: ${node_id:-未设置})"
-        done
-
-        echo
-        echo "[0] 返回主菜单"
-        echo "--------------------------------"
-        read -rp "请选择要查看的容器: " input
-
-        if [[ "$input" == "0" ]]; then
-            return
-        fi
-
-        if [[ "$input" =~ ^[0-9]+$ ]] && [ "$input" -ge 1 ] && [ "$input" -le "${#containers[@]}" ]; then
-            container_name="${containers[$((input-1))]}"
-            
-            clear
-            echo -e "\n🔍 实时监控: $container_name (Ctrl+C 停止)"
-            echo "--------------------------------"
-            
-            trap "echo -e '\n🛑 已停止监控'; return 0" SIGINT
-            docker logs -f --tail=20 "$container_name" 2>&1
-            
-            trap - SIGINT
-            read -rp "按 Enter 继续..."
-        else
-            echo "❌ 无效的容器编号"
-            sleep 1
-        fi
+    echo "当前运行中的实例："
+    for i in "${!containers[@]}"; do
+        echo "[$((i+1))] ${containers[$i]}"
     done
+
+    read -rp "请输入要进入 UI 的编号: " input
+    if [[ "$input" =~ ^[0-9]+$ && "$input" -le ${#containers[@]} ]]; then
+        container_name="${containers[$((input-1))]}"
+        clear
+docker exec -it "$container_name" bash -c '
+    NODE_ID=$(printenv NODE_ID)
+    nexus-network start --node-id "$NODE_ID"
+'
+clear
+
+        return
+    else
+        echo "❌ 输入无效"
+        sleep 2
+    fi
+    return
 }
 
 function show_menu() {
@@ -293,14 +277,12 @@ while true; do
     show_menu
     read -rp "请选择操作: " choice
     case "$choice" in
-        1) prepare_build_files; build_image;;
-        2) start_instances;;
-        3) docker rm -f $(docker ps -aq --filter "name=nexus-node-") || true;;
-        4) show_container_logs;;
-        5) restart_node;;
-        6) add_one_instance ;;
-        0) echo "退出"; exit 0;;
-        *) echo "无效选项";;
+        1) build_image ;;
+        2) start_instances ;;
+        3) stop_instances ;;
+        4) show_container_logs ;;
+        5) show_resource_monitor ;;
+        0) echo "👋 再见"; exit 0 ;;
+        *) echo "❌ 无效选择"; sleep 1 ;;
     esac
-    read -rp "按 Enter 继续..."
 done
