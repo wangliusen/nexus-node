@@ -126,14 +126,14 @@ function start_instances() {
 
         docker run -dit \
             --name "$CONTAINER_NAME" \
-            --memory=2g \
-            --cpus=5 \
+            --memory=6g \
+            --cpus=16 \
             -e NODE_ID="$NODE_ID" \
-            -e MAX_THREADS=5 \
+            -e MAX_THREADS=16 \
             -v "$LOG_DIR":/nexus-data \
             "$IMAGE_NAME"
 
-        echo "✅ 实例 $CONTAINER_NAME 启动成功（线程数: 2，内存限制: 2GB）"
+        echo "✅ 实例 $CONTAINER_NAME 启动成功（线程数: 16，内存限制: 6GB）"
     done
 }
 
